@@ -1,0 +1,185 @@
+const { admin, db } = require('./_firebase');
+
+const parseRoute = (req) => {
+  const url = req.url || '';
+  const parsed = new URL(url, `http://${req.headers.host || 'localhost'}`);
+  let pathname = parsed.pathname;
+
+  if (pathname.startsWith('/api/')) {
+    pathname = pathname.substring(5);
+  } else if (pathname.startsWith('/api')) {
+    pathname = pathname.substring(4);
+  } else if (pathname.startsWith('/')) {
+    pathname = pathname.substring(1);
+  }
+
+  return pathname || 'ping';
+};
+
+const jsonResponse = (res, status, body) => {
+  res.status(status).json(body);
+};
+
+const requireMethod = (req, res, method) => {
+  if (req.method !== method) {
+    res.setHeader('Allow', method);
+    jsonResponse(res, 405, { error: 'Method not allowed' });
+    return false;
+  }
+  return true;
+};
+
+const normalizeRoomId = (room) => room.toString().trim().toLowerCase();
+
+const handleJoinRoom = async (req, res) => {
+  if (!requireMethod(req, res, 'POST')) return;
+
+  const { room, clientId, clientName } = req.body || {};
+  if (!room || !clientId || !clientName) {
+    return jsonResponse(res, 400, { error: 'Missing room, clientId, or clientName' });
+  }
+
+  const roomId = normalizeRoomId(room);
+  const membersRef = db.collection('rooms').doc(roomId).collection('members');
+  const now = admin.firestore.Timestamp.now();
+
+  await db.collection('rooms').doc(roomId).set({ updatedAt: now }, { merge: true });
+  await membersRef.doc(clientId).set({
+    clientId,
+    clientName,
+    joinedAt: now,
+    lastSeen: now,
+  });
+
+  const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - 30000);
+  const peerSnapshot = await membersRef.get();
+  const peers = peerSnapshot.docs
+    .filter((doc) => doc.id !== clientId)
+    .map((doc) => doc.data())
+    .filter((peer) => peer.lastSeen && peer.lastSeen.toMillis() >= cutoff.toMillis())
+    .map((peer) => ({
+      deviceId: peer.clientId,
+      deviceName: peer.clientName,
+    }));
+
+  return jsonResponse(res, 200, { room: roomId, peers });
+};
+
+const handleGetPeers = async (req, res) => {
+  if (!requireMethod(req, res, 'GET')) return;
+
+  const room = req.query.room;
+  const clientId = req.query.clientId;
+  if (!room || !clientId) {
+    return jsonResponse(res, 400, { error: 'Missing room or clientId' });
+  }
+
+  const roomId = normalizeRoomId(room);
+  const membersRef = db.collection('rooms').doc(roomId).collection('members');
+  const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - 30000);
+  const memberSnapshot = await membersRef.get();
+
+  const peers = memberSnapshot.docs
+    .filter((doc) => doc.id !== clientId)
+    .map((doc) => doc.data())
+    .filter((peer) => peer.lastSeen && peer.lastSeen.toMillis() >= cutoff.toMillis())
+    .map((peer) => ({
+      deviceId: peer.clientId,
+      deviceName: peer.clientName,
+    }));
+
+  return jsonResponse(res, 200, { peers });
+};
+
+const handleSendSignal = async (req, res) => {
+  if (!requireMethod(req, res, 'POST')) return;
+
+  const { room, from, to, signal } = req.body || {};
+  if (!room || !from || !to || !signal) {
+    return jsonResponse(res, 400, { error: 'Missing room, from, to, or signal' });
+  }
+
+  const roomId = normalizeRoomId(room);
+  const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
+  const now = admin.firestore.Timestamp.now();
+
+  await signalsRef.add({
+    from,
+    to,
+    signal,
+    createdAt: now,
+  });
+
+  return jsonResponse(res, 200, { ok: true });
+};
+
+const handlePollSignals = async (req, res) => {
+  if (!requireMethod(req, res, 'GET')) return;
+
+  const room = req.query.room;
+  const clientId = req.query.clientId;
+  if (!room || !clientId) {
+    return jsonResponse(res, 400, { error: 'Missing room or clientId' });
+  }
+
+  const roomId = normalizeRoomId(room);
+  const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
+  const querySnapshot = await signalsRef
+    .where('to', '==', clientId)
+    .orderBy('createdAt', 'asc')
+    .limit(50)
+    .get();
+
+  const signals = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const batch = db.batch();
+  querySnapshot.docs.forEach((doc) => batch.delete(doc.ref));
+  await batch.commit();
+
+  return jsonResponse(res, 200, { signals });
+};
+
+const handleLeaveRoom = async (req, res) => {
+  if (!requireMethod(req, res, 'POST')) return;
+
+  const { room, clientId } = req.body || {};
+  if (!room || !clientId) {
+    return jsonResponse(res, 400, { error: 'Missing room or clientId' });
+  }
+
+  const roomId = normalizeRoomId(room);
+  const memberRef = db.collection('rooms').doc(roomId).collection('members').doc(clientId);
+  await memberRef.delete();
+
+  return jsonResponse(res, 200, { ok: true });
+};
+
+const handlePing = async (req, res) => {
+  return jsonResponse(res, 200, { status: 'ok' });
+};
+
+module.exports = async (req, res) => {
+  try {
+    const route = parseRoute(req);
+
+    switch (route) {
+      case 'join-room':
+        return await handleJoinRoom(req, res);
+      case 'get-peers':
+        return await handleGetPeers(req, res);
+      case 'send-signal':
+        return await handleSendSignal(req, res);
+      case 'poll-signals':
+        return await handlePollSignals(req, res);
+      case 'leave-room':
+        return await handleLeaveRoom(req, res);
+      case 'ping':
+      case '':
+        return await handlePing(req, res);
+      default:
+        return jsonResponse(res, 404, { error: 'Not found' });
+    }
+  } catch (error) {
+    console.error('API error:', error);
+    return jsonResponse(res, 500, { error: 'Internal server error' });
+  }
+};

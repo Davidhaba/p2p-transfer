@@ -4,5 +4,5 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  res.status(200).json({ status: 'ok' });
+  return res.status(200).json({ status: 'ok' });
 };

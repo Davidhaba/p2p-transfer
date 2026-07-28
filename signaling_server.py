@@ -20,7 +20,6 @@ class SignalingServer:
             'name': device_name,
             'connected': True
         }
-        print(f"[server] Device registered: {device_id} ({device_name})")
     
     def unregister_device(self, device_id: str) -> None:
         """Unregister a device and remove it from any room"""
@@ -34,11 +33,8 @@ class SignalingServer:
                 members.remove(device_id)
                 if not members:
                     del self.rooms[room_id]
-                print(f"[server] Device {device_id} removed from room {room_id}")
-        print(f"[server] Device unregistered: {device_id}")
     
     def get_available_devices(self, exclude_device_id: str) -> list:
-        """Get list of available devices (excluding self)"""
         return [
             info for dev_id, info in self.device_info.items()
             if dev_id != exclude_device_id and info['connected']
@@ -59,7 +55,6 @@ class SignalingServer:
         return peers
 
     async def relay_signal(self, from_device_id: str, to_device_id: str, signal: Dict) -> bool:
-        """Relay WebRTC signaling (SDP, ICE) between devices"""
         if to_device_id not in self.devices:
             print(f"[server] Target device {to_device_id} not found")
             return False
@@ -73,7 +68,6 @@ class SignalingServer:
         
         try:
             await target_websocket.send(json.dumps(message))
-            print(f"[server] Signal relayed: {from_device_id} -> {to_device_id}")
             return True
         except Exception as e:
             print(f"[server] Failed to relay signal: {e}")
@@ -91,7 +85,6 @@ class SignalingServer:
         members = self.rooms.setdefault(room_id, set())
         if device_id not in members:
             members.add(device_id)
-            print(f"[server] Device {device_id} joined room {room_id}")
 
     async def broadcast_peer_joined(self, room_id: str, device_id: str, device_name: str) -> None:
         members = self.rooms.get(room_id, set())
@@ -112,7 +105,6 @@ class SignalingServer:
                 continue
             try:
                 await self.devices[member_id].send(json.dumps(message))
-                print(f"[server] Notified {member_id} about new peer {device_id}")
             except Exception as e:
                 print(f"[server] Failed to notify {member_id} about new peer {device_id}: {e}")
 
@@ -151,7 +143,6 @@ async def handler(websocket, path=None):
             
             msg_type = message.get('type')
             
-            # Registration
             if msg_type == 'register':
                 device_id = message.get('deviceId')
                 device_name = message.get('deviceName', 'Unknown')
@@ -168,7 +159,6 @@ async def handler(websocket, path=None):
 
                 server.register_device(device_id, websocket, device_name)
                 
-                # Send registration confirmation
                 await server.safe_send(websocket, {
                     'type': 'registered',
                     'deviceId': device_id
@@ -182,7 +172,6 @@ async def handler(websocket, path=None):
                 })
                 continue
             
-            # Get available devices (discovery)
             if msg_type == 'list_devices':
                 available = server.get_available_devices(device_id)
                 await server.safe_send(websocket, {
@@ -231,7 +220,6 @@ async def handler(websocket, path=None):
                     }))
                 continue
             
-            # Ping/keep-alive
             if msg_type == 'ping':
                 await websocket.send(json.dumps({'type': 'pong'}))
                 continue
@@ -252,7 +240,6 @@ async def main():
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     
-    # Handle graceful shutdown
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop_event.set)
