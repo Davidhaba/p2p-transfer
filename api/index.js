@@ -31,6 +31,36 @@ const requireMethod = (req, res, method) => {
 
 const normalizeRoomId = (room) => room.toString().trim().toLowerCase();
 
+const fetchAndDeleteSignals = async (roomId, clientId) => {
+  const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
+  const querySnapshot = await signalsRef
+    .where('to', '==', clientId)
+    .orderBy('createdAt', 'asc')
+    .limit(50)
+    .get();
+
+  const signals = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const batch = db.batch();
+  querySnapshot.docs.forEach((doc) => batch.delete(doc.ref));
+  await batch.commit();
+  return signals;
+};
+
+const getRoomPeers = async (roomId, clientId) => {
+  const membersRef = db.collection('rooms').doc(roomId).collection('members');
+  const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - 30000);
+  const memberSnapshot = await membersRef.get();
+
+  return memberSnapshot.docs
+    .filter((doc) => doc.id !== clientId)
+    .map((doc) => doc.data())
+    .filter((peer) => peer.lastSeen && peer.lastSeen.toMillis() >= cutoff.toMillis())
+    .map((peer) => ({
+      deviceId: peer.clientId,
+      deviceName: peer.clientName,
+    }));
+};
+
 const handleJoinRoom = async (req, res) => {
   if (!requireMethod(req, res, 'POST')) return;
 
@@ -51,21 +81,14 @@ const handleJoinRoom = async (req, res) => {
     lastSeen: now,
   });
 
-  const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - 30000);
-  const peerSnapshot = await membersRef.get();
-  const peers = peerSnapshot.docs
-    .filter((doc) => doc.id !== clientId)
-    .map((doc) => doc.data())
-    .filter((peer) => peer.lastSeen && peer.lastSeen.toMillis() >= cutoff.toMillis())
-    .map((peer) => ({
-      deviceId: peer.clientId,
-      deviceName: peer.clientName,
-    }));
+  const peers = await getRoomPeers(roomId, clientId);
+  const signals = await fetchAndDeleteSignals(roomId, clientId);
 
   try {
+    const memberSnapshot = await membersRef.get();
     const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
     const batch = db.batch();
-    peerSnapshot.docs
+    memberSnapshot.docs
       .filter((doc) => doc.id !== clientId)
       .forEach((doc) => {
         const other = doc.data();
@@ -86,7 +109,7 @@ const handleJoinRoom = async (req, res) => {
     console.error('Failed to write peer_joined signals:', err);
   }
 
-  return jsonResponse(res, 200, { room: roomId, peers });
+  return jsonResponse(res, 200, { room: roomId, peers, signals });
 };
 
 const handleGetPeers = async (req, res) => {
@@ -113,6 +136,21 @@ const handleGetPeers = async (req, res) => {
     }));
 
   return jsonResponse(res, 200, { peers });
+};
+
+const handleRoomState = async (req, res) => {
+  if (!requireMethod(req, res, 'GET')) return;
+
+  const room = req.query.room;
+  const clientId = req.query.clientId;
+  if (!room || !clientId) {
+    return jsonResponse(res, 400, { error: 'Missing room or clientId' });
+  }
+
+  const roomId = normalizeRoomId(room);
+  const peers = await getRoomPeers(roomId, clientId);
+  const signals = await fetchAndDeleteSignals(roomId, clientId);
+  return jsonResponse(res, 200, { peers, signals });
 };
 
 const handleSendSignal = async (req, res) => {
@@ -148,18 +186,23 @@ const handlePollSignals = async (req, res) => {
 
   const roomId = normalizeRoomId(room);
   const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
-  const querySnapshot = await signalsRef
-    .where('to', '==', clientId)
-    .orderBy('createdAt', 'asc')
-    .limit(50)
-    .get();
+  try {
+    const querySnapshot = await signalsRef
+      .where('to', '==', clientId)
+      .orderBy('createdAt', 'asc')
+      .limit(50)
+      .get();
 
-  const signals = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-  const batch = db.batch();
-  querySnapshot.docs.forEach((doc) => batch.delete(doc.ref));
-  await batch.commit();
+    const signals = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const batch = db.batch();
+    querySnapshot.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
 
-  return jsonResponse(res, 200, { signals });
+    return jsonResponse(res, 200, { signals });
+  } catch (error) {
+    console.error('API error while polling signals:', error);
+    return jsonResponse(res, 200, { signals: [], warning: 'firestore_query_requires_index_or_failed', details: String(error) });
+  }
 };
 
 const handleLeaveRoom = async (req, res) => {
@@ -223,6 +266,8 @@ module.exports = async (req, res) => {
         return await handleJoinRoom(req, res);
       case 'get-peers':
         return await handleGetPeers(req, res);
+      case 'room-state':
+        return await handleRoomState(req, res);
       case 'send-signal':
         return await handleSendSignal(req, res);
       case 'poll-signals':
@@ -230,7 +275,6 @@ module.exports = async (req, res) => {
       case 'leave-room':
         return await handleLeaveRoom(req, res);
       case 'ping':
-      case '':
         return await handlePing(req, res);
       default:
         return jsonResponse(res, 404, { error: 'Not found' });
