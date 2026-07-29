@@ -122,6 +122,13 @@ const handleGetPeers = async (req, res) => {
   }
 
   const roomId = normalizeRoomId(room);
+  try {
+    const membersRef = db.collection('rooms').doc(roomId).collection('members');
+    const now = admin.firestore.Timestamp.now();
+    await membersRef.doc(clientId).set({ lastSeen: now }, { merge: true });
+  } catch (err) {
+    console.error('Failed to update lastSeen in get-peers:', err);
+  }
   const membersRef = db.collection('rooms').doc(roomId).collection('members');
   const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - 30000);
   const memberSnapshot = await membersRef.get();
@@ -148,6 +155,13 @@ const handleRoomState = async (req, res) => {
   }
 
   const roomId = normalizeRoomId(room);
+  try {
+    const membersRef = db.collection('rooms').doc(roomId).collection('members');
+    const now = admin.firestore.Timestamp.now();
+    await membersRef.doc(clientId).set({ lastSeen: now }, { merge: true });
+  } catch (err) {
+    console.error('Failed to update lastSeen in room-state:', err);
+  }
   const peers = await getRoomPeers(roomId, clientId);
   const signals = await fetchAndDeleteSignals(roomId, clientId);
   return jsonResponse(res, 200, { peers, signals });
@@ -185,6 +199,13 @@ const handlePollSignals = async (req, res) => {
   }
 
   const roomId = normalizeRoomId(room);
+  try {
+    const membersRef = db.collection('rooms').doc(roomId).collection('members');
+    const now = admin.firestore.Timestamp.now();
+    await membersRef.doc(clientId).set({ lastSeen: now }, { merge: true });
+  } catch (err) {
+    console.error('Failed to update lastSeen in poll-signals:', err);
+  }
   const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
   try {
     const querySnapshot = await signalsRef
