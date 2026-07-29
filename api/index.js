@@ -62,6 +62,30 @@ const handleJoinRoom = async (req, res) => {
       deviceName: peer.clientName,
     }));
 
+  try {
+    const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
+    const batch = db.batch();
+    peerSnapshot.docs
+      .filter((doc) => doc.id !== clientId)
+      .forEach((doc) => {
+        const other = doc.data();
+        const sigDoc = signalsRef.doc();
+        batch.set(sigDoc, {
+          from: clientId,
+          to: other.clientId,
+          signal: {
+            type: 'peer_joined',
+            deviceId: clientId,
+            deviceName: clientName,
+          },
+          createdAt: now,
+        });
+      });
+    await batch.commit();
+  } catch (err) {
+    console.error('Failed to write peer_joined signals:', err);
+  }
+
   return jsonResponse(res, 200, { room: roomId, peers });
 };
 
@@ -148,7 +172,40 @@ const handleLeaveRoom = async (req, res) => {
 
   const roomId = normalizeRoomId(room);
   const memberRef = db.collection('rooms').doc(roomId).collection('members').doc(clientId);
-  await memberRef.delete();
+  try {
+    const membersRef = db.collection('rooms').doc(roomId).collection('members');
+    const membersSnapshot = await membersRef.get();
+    const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
+    const now = admin.firestore.Timestamp.now();
+
+    const batch = db.batch();
+    membersSnapshot.docs
+      .filter((doc) => doc.id !== clientId)
+      .forEach((doc) => {
+        const other = doc.data();
+        const sigDoc = signalsRef.doc();
+        batch.set(sigDoc, {
+          from: clientId,
+          to: other.clientId,
+          signal: {
+            type: 'peer_left',
+            deviceId: clientId,
+          },
+          createdAt: now,
+        });
+      });
+
+    await memberRef.delete();
+    await batch.commit();
+  } catch (err) {
+    // If something fails, still attempt to delete the member and log the error.
+    console.error('Error while notifying peers on leave:', err);
+    try {
+      await memberRef.delete();
+    } catch (e) {
+      console.error('Failed to delete member after notification error:', e);
+    }
+  }
 
   return jsonResponse(res, 200, { ok: true });
 };
