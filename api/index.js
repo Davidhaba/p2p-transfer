@@ -61,6 +61,29 @@ const crypto = require('crypto');
 
 const hashPassword = (password) => crypto.createHash('sha256').update(password).digest('hex');
 
+const isAuthorizedMember = async (roomId, clientId) => {
+  const memberDoc = await db.collection('rooms').doc(roomId).collection('members').doc(clientId).get();
+  return memberDoc.exists && memberDoc.data()?.authorized === true;
+};
+
+const isRoomProtected = (roomData) => {
+  const storedHash = roomData.passwordHash;
+  return storedHash !== undefined && storedHash !== null;
+};
+
+const requireRoomAuthorization = async (roomId, clientId, res) => {
+  const roomSnap = await db.collection('rooms').doc(roomId).get();
+  const roomProtected = roomSnap.exists && isRoomProtected(roomSnap.data() || {});
+  if (!roomProtected) {
+    return true;
+  }
+  if (await isAuthorizedMember(roomId, clientId)) {
+    return true;
+  }
+  jsonResponse(res, 401, { error: 'Not authorized to access this room' });
+  return false;
+};
+
 const handleJoinRoom = async (req, res) => {
   if (!requireMethod(req, res, 'POST')) return;
 
@@ -97,11 +120,11 @@ const handleJoinRoom = async (req, res) => {
 
     if (roomProtected) {
       if (!passwordSent) {
-        return jsonResponse(res, 200, { status: 'require_password' });
+        return jsonResponse(res, 401, { status: 'require_password', error: 'Password required' });
       }
       const providedHash = hashPassword(password);
       if (providedHash !== storedHash) {
-        return jsonResponse(res, 200, { status: 'wrong_password' });
+        return jsonResponse(res, 403, { status: 'wrong_password', error: 'Wrong password' });
       }
     }
   }
@@ -113,6 +136,7 @@ const handleJoinRoom = async (req, res) => {
       clientName,
       joinedAt: now,
       lastSeen: now,
+      authorized: true,
     });
 
     const peers = await getRoomPeers(roomId, clientId);
@@ -160,6 +184,8 @@ const handleGetPeers = async (req, res) => {
   }
 
   const roomId = normalizeRoomId(room);
+  if (!await requireRoomAuthorization(roomId, clientId, res)) return;
+
   try {
     const membersRef = db.collection('rooms').doc(roomId).collection('members');
     const now = admin.firestore.Timestamp.now();
@@ -193,6 +219,8 @@ const handleRoomState = async (req, res) => {
   }
 
   const roomId = normalizeRoomId(room);
+  if (!await requireRoomAuthorization(roomId, clientId, res)) return;
+
   try {
     const membersRef = db.collection('rooms').doc(roomId).collection('members');
     const now = admin.firestore.Timestamp.now();
@@ -214,6 +242,7 @@ const handleSendSignal = async (req, res) => {
   }
 
   const roomId = normalizeRoomId(room);
+  if (!await requireRoomAuthorization(roomId, from, res)) return;
   const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
   const now = admin.firestore.Timestamp.now();
 
@@ -237,6 +266,8 @@ const handlePollSignals = async (req, res) => {
   }
 
   const roomId = normalizeRoomId(room);
+  if (!await requireRoomAuthorization(roomId, clientId, res)) return;
+
   try {
     const membersRef = db.collection('rooms').doc(roomId).collection('members');
     const now = admin.firestore.Timestamp.now();
