@@ -5,11 +5,7 @@ const parseRoute = (req) => {
   const parsed = new URL(url, `http://${req.headers.host || 'localhost'}`);
   let pathname = parsed.pathname;
 
-  if (pathname.startsWith('/api/')) {
-    pathname = pathname.substring(5);
-  } else if (pathname.startsWith('/api')) {
-    pathname = pathname.substring(4);
-  } else if (pathname.startsWith('/')) {
+  if (pathname.startsWith('/')) {
     pathname = pathname.substring(1);
   }
 
@@ -80,11 +76,15 @@ const handleJoinRoom = async (req, res) => {
   const roomSnap = await roomRef.get();
 
   if (!roomSnap.exists) {
-    if (!password) {
+    if (password === undefined) {
       return jsonResponse(res, 200, { status: 'create_password' });
     }
     try {
-      await roomRef.set({ passwordHash: hashPassword(password), updatedAt: now }, { merge: true });
+      if (password === '') {
+        await roomRef.set({ updatedAt: now }, { merge: true });
+      } else {
+        await roomRef.set({ passwordHash: hashPassword(password), updatedAt: now }, { merge: true });
+      }
     } catch (err) {
       console.error('Failed to create room with password:', err);
       return jsonResponse(res, 500, { error: 'Failed to create room' });
@@ -92,8 +92,11 @@ const handleJoinRoom = async (req, res) => {
   } else {
     const roomData = roomSnap.data() || {};
     const storedHash = roomData.passwordHash;
-    if (storedHash) {
-      if (!password) {
+    const roomProtected = storedHash !== undefined && storedHash !== null;
+    const passwordSent = password !== undefined && password !== null;
+
+    if (roomProtected) {
+      if (!passwordSent) {
         return jsonResponse(res, 200, { status: 'require_password' });
       }
       const providedHash = hashPassword(password);
