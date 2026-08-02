@@ -61,10 +61,14 @@ const getRoomPeers = async (roomId, clientId) => {
     }));
 };
 
+const crypto = require('crypto');
+
+const hashPassword = (password) => crypto.createHash('sha256').update(password).digest('hex');
+
 const handleJoinRoom = async (req, res) => {
   if (!requireMethod(req, res, 'POST')) return;
 
-  const { room, clientId, clientName } = req.body || {};
+  const { room, clientId, clientName, password } = req.body || {};
   if (!room || !clientId || !clientName) {
     return jsonResponse(res, 400, { error: 'Missing room, clientId, or clientName' });
   }
@@ -72,44 +76,75 @@ const handleJoinRoom = async (req, res) => {
   const roomId = normalizeRoomId(room);
   const membersRef = db.collection('rooms').doc(roomId).collection('members');
   const now = admin.firestore.Timestamp.now();
+  const roomRef = db.collection('rooms').doc(roomId);
+  const roomSnap = await roomRef.get();
 
-  await db.collection('rooms').doc(roomId).set({ updatedAt: now }, { merge: true });
-  await membersRef.doc(clientId).set({
-    clientId,
-    clientName,
-    joinedAt: now,
-    lastSeen: now,
-  });
-
-  const peers = await getRoomPeers(roomId, clientId);
-  const signals = await fetchAndDeleteSignals(roomId, clientId);
-
-  try {
-    const memberSnapshot = await membersRef.get();
-    const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
-    const batch = db.batch();
-    memberSnapshot.docs
-      .filter((doc) => doc.id !== clientId)
-      .forEach((doc) => {
-        const other = doc.data();
-        const sigDoc = signalsRef.doc();
-        batch.set(sigDoc, {
-          from: clientId,
-          to: other.clientId,
-          signal: {
-            type: 'peer_joined',
-            deviceId: clientId,
-            deviceName: clientName,
-          },
-          createdAt: now,
-        });
-      });
-    await batch.commit();
-  } catch (err) {
-    console.error('Failed to write peer_joined signals:', err);
+  if (!roomSnap.exists) {
+    if (!password) {
+      return jsonResponse(res, 200, { status: 'create_password' });
+    }
+    try {
+      await roomRef.set({ passwordHash: hashPassword(password), updatedAt: now }, { merge: true });
+    } catch (err) {
+      console.error('Failed to create room with password:', err);
+      return jsonResponse(res, 500, { error: 'Failed to create room' });
+    }
+  } else {
+    const roomData = roomSnap.data() || {};
+    const storedHash = roomData.passwordHash;
+    if (storedHash) {
+      if (!password) {
+        return jsonResponse(res, 200, { status: 'require_password' });
+      }
+      const providedHash = hashPassword(password);
+      if (providedHash !== storedHash) {
+        return jsonResponse(res, 200, { status: 'wrong_password' });
+      }
+    }
   }
 
-  return jsonResponse(res, 200, { room: roomId, peers, signals });
+  try {
+    await roomRef.set({ updatedAt: now }, { merge: true });
+    await membersRef.doc(clientId).set({
+      clientId,
+      clientName,
+      joinedAt: now,
+      lastSeen: now,
+    });
+
+    const peers = await getRoomPeers(roomId, clientId);
+    const signals = await fetchAndDeleteSignals(roomId, clientId);
+
+    try {
+      const memberSnapshot = await membersRef.get();
+      const signalsRef = db.collection('rooms').doc(roomId).collection('signals');
+      const batch = db.batch();
+      memberSnapshot.docs
+        .filter((doc) => doc.id !== clientId)
+        .forEach((doc) => {
+          const other = doc.data();
+          const sigDoc = signalsRef.doc();
+          batch.set(sigDoc, {
+            from: clientId,
+            to: other.clientId,
+            signal: {
+              type: 'peer_joined',
+              deviceId: clientId,
+              deviceName: clientName,
+            },
+            createdAt: now,
+          });
+        });
+      await batch.commit();
+    } catch (err) {
+      console.error('Failed to write peer_joined signals:', err);
+    }
+
+    return jsonResponse(res, 200, { status: 'joined', room: roomId, peers, signals });
+  } catch (err) {
+    console.error('Failed to join room:', err);
+    return jsonResponse(res, 500, { error: 'Failed to join room' });
+  }
 };
 
 const handleGetPeers = async (req, res) => {
