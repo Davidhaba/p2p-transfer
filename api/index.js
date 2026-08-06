@@ -6,6 +6,9 @@ const parseRoute = (req) => {
   if (queryIndex > -1) {
     url = url.substring(0, queryIndex);
   }
+  if (url.startsWith('/api')) {
+    url = url.substring(4);
+  }
   if (url.startsWith('/')) {
     url = url.substring(1);
   }
