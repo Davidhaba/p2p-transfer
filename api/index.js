@@ -1,18 +1,22 @@
 const { admin, db } = require('./_firebase');
 
 const parseRoute = (req) => {
-  const url = req.url || '';
-  const parsed = new URL(url, `http://${req.headers.host || 'localhost'}`);
-  let pathname = parsed.pathname;
-
-  if (pathname.startsWith('/')) {
-    pathname = pathname.substring(1);
+  let url = req.url || '';
+  const queryIndex = url.indexOf('?');
+  if (queryIndex > -1) {
+    url = url.substring(0, queryIndex);
   }
-
-  return pathname || 'ping';
+  if (url.startsWith('/')) {
+    url = url.substring(1);
+  }
+  
+  return url;
 };
 
 const jsonResponse = (res, status, body) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.status(status).json(body);
 };
 
@@ -331,7 +335,6 @@ const handleLeaveRoom = async (req, res) => {
     await memberRef.delete();
     await batch.commit();
   } catch (err) {
-    // If something fails, still attempt to delete the member and log the error.
     console.error('Error while notifying peers on leave:', err);
     try {
       await memberRef.delete();
@@ -343,11 +346,15 @@ const handleLeaveRoom = async (req, res) => {
   return jsonResponse(res, 200, { ok: true });
 };
 
-const handlePing = async (req, res) => {
-  return jsonResponse(res, 200, { status: 'ok' });
-};
-
 module.exports = async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.status(200).end();
+    return;
+  }
+
   try {
     const route = parseRoute(req);
 
@@ -364,8 +371,6 @@ module.exports = async (req, res) => {
         return await handlePollSignals(req, res);
       case 'leave-room':
         return await handleLeaveRoom(req, res);
-      case 'ping':
-        return await handlePing(req, res);
       default:
         return jsonResponse(res, 404, { error: 'Not found' });
     }
