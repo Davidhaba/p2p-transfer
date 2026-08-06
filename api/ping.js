@@ -8,8 +8,8 @@ module.exports = (req, res) => {
     return;
   }
 
-  res.status(200).json({ 
-    status: 'ok', 
-    timestamp: Date.now() 
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toLocaleString('en-US')
   });
 };
