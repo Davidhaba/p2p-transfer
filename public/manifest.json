@@ -1,6 +1,6 @@
 {
-    "name": "p2p_transfer",
-    "short_name": "p2p_transfer",
+    "name": "PeerChat",
+    "short_name": "PeerChat",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
